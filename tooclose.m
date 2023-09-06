@@ -25,15 +25,17 @@ function [newlines] = tooclose(current)
             end
         end
     end
+    % now we make a graph where the nodes are the hough lines and the edges
+    % are whether the hough lines are duplicates of each other
     gnew = graph(adj, 'omitselfloops');
     eid = [];
     mybins = conncomp(gnew);
     for p=1:length(mybins)
-        if (degree(gnew, p) == 1) && (length(find(mybins == mybins(p))) > 4)
-            eid = [eid outedges(gnew, p)];
+        if (degree(gnew, p) == 1) && (length(find(mybins == mybins(p))) > 4) % remove weak connections between parts
+            eid = [eid outedges(gnew, p)]; % so we remove it by adding it to eid and removing these edges later
         end
     end
-    gnew = rmedge(gnew, eid);
+    gnew = rmedge(gnew, eid); % remove weakly connected components
     idx2keep = [];
     mybins = conncomp(gnew);
     for n = 1:max(mybins)
