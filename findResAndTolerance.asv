@@ -1,4 +1,4 @@
-function rval = workerbee(im, SVM_beige, SVM_blue, SVM_brown)
+function rval = findResAndTolerance(im, SVM_beige, SVM_blue, SVM_brown)
 % if subsection of image contains a valid resistor, return its resistance
 % and tolerance value
 try
@@ -139,6 +139,7 @@ try
     % The pattern reader reads from beginning to end, so if the tolerance is at
     % the start the sequence will have to be flipped. The variable tol keeps
     % track of this; if tol==1 the tolerance band is at the start.
+    tol = findToleranceSide(bandColors, toleranceMap, dedupLines, r_series, horizColors); 
     if bandColors(1) == "gold" && bandColors(end) ~="gold"
         tol = 1;
     elseif bandColors(end) == "gold" && bandColors(1) ~="gold"

@@ -1,0 +1,6 @@
+function mask = getMask(blobProp)
+mask = double(blobProps(i).FilledImage);
+mask = imclose(mask, strel('disk', round(blobProps(i).MinFeretDiameter/3)));
+mask = imopen(mask, strel('disk', round(blobProps(i).MinFeretDiameter/4)));
+mask = imrotate(mask, 90-blobProps(i).Orientation);
+end

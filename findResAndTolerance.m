@@ -1,0 +1,196 @@
+function rval = findResAndTolerance(im, SVM_beige, SVM_blue, SVM_brown)
+% if subsection of image contains a valid resistor, return its resistance
+% and tolerance value
+try
+    resMap = containers.Map({'black', 'brown', 'red', 'orange', 'yellow', 'green', 'blue', 'violet', 'gray', 'white', 'gold'}, {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, -1}); %#ok<CLARRSTR>
+    toleranceMap = containers.Map({'gold', 'gray', 'purple', 'blue', 'green', 'red', 'brown'}, {'5%', '10%', '0.1%', '0.25%', '0.5%', '1%', '2%'}); %#ok<CLARRSTR>
+    im1 = im(:, :, 1);
+    im2= im(:, :, 2);
+    im3= im(:, :, 3); % the three image channels
+    BW3 = edge(imgaussfilt(im3, 3), 'canny', 0.1); % three edges of image channels
+    BW2 = edge(imgaussfilt(im2, 3), 'canny', 0.1);
+    BW1 = edge(imgaussfilt(im1, 3), 'canny', 0.1);
+    bw12 = imadd(BW1, BW2);
+    BW = imadd(bw12, double(BW3)); % sum of edge channels
+    % emphasizing horizontal lines
+    BW = imopen(BW, [1 1 1]);
+    % getting hough lines
+    [H,T,R] = hough(BW, 'Theta',[-90:-80 80:89]);
+    P = houghpeaks(H, 50, 'Threshold', ceil(0.33*max(H(:))), 'theta',[-90:-80 80:89]);
+    lines = houghlines(BW,T,R,P,'FillGap',15,'MinLength',30);
+    lines = table2array(struct2table(lines));
+    ll = size(lines);
+    ll = ll(1);
+    lines(:, 7) = zeros([ll 1]);
+    % 1: pt1x 2: pt1y 3: pt2x 4: pt2y 5: cntrx 6: cntry 7: theta
+    for i = 1:ll % add the theta information and the center information
+        slope = (lines(i, 2) -lines(i, 4))./ (lines(i, 1)-lines(i, 3));
+        lines(i, 7) = atand(slope);
+        centers = round([lines(i, 1)+lines(i, 3) lines(i, 2)+lines(i, 4)]./2);
+        lines(i, 5:6) = centers;
+    end
+
+    dedupLines = tooclose(lines); % de duplication
+    sizeDedupLines = size(dedupLines);
+    if sizeDedupLines(1) < 8 || sizeDedupLines(1) > 15 % size checking
+        rval = "1"; % not enough lines to be a valid resistor; return 
+        return
+    end
+    dedupLines = sortrows(dedupLines, 6); % sort vertically
+    lc = size(dedupLines);
+    lc = lc(1);
+    horizColors = containers.Map('KeyType', 'double', 'ValueType', 'any');
+    % color extraction
+    for l=1:lc-1
+        horizColors(l) = [];
+        centersx = zeros([2 10]);
+        centersy = zeros([2 10]);
+        ang1 = (dedupLines(l, 7));
+        ang2 = (dedupLines(l+1, 7));
+        for m = 1:20 % this is the main part where the pixels are picked out
+            centersx(1, m) = round(dedupLines(l, 5) + (m-10).*cosd(ang1)); % finding the centers of each band
+            centersx(2, m) = round(dedupLines(l+1, 5) + (m-10).*cosd(ang2));
+            centersy(1, m) = round(dedupLines(l, 6) + (m-10).*sind(ang1));
+            centersy(2, m) = round(dedupLines(l+1, 6) + (m-10).*sind(ang2));
+            [~, ~, c] = improfile(im, centersx(:, m) , centersy(:, m));
+            s = size(c);
+            horizColors(l) = [horizColors(l); reshape(c, [s(1) s(3) s(2)])];
+        end
+    end
+    
+    meds = [];
+    for k=1:length(horizColors.keys)
+        horizColors(k) = horizColors(k)./255;
+        meds = [meds; median(horizColors(k))]; % taking the median of the color sample for each band
+    end
+    adj = zeros(length(horizColors.keys)); % adjacency matrix for finding the distances between colors
+    % the series with the lowest distance is the body of the resistor
+    for k = cell2mat(horizColors.keys)
+        for l = cell2mat(horizColors.keys)
+            med1 = rgb2lab(meds(k, :));
+            med2 = rgb2lab(meds(l, :));
+            d_unscaled = med1 - med2; % unscaled distance
+            std1 = std(rgb2lab(horizColors(k))); % convert to lab color space
+            std2 = std(rgb2lab(horizColors(l)));
+            d1 = d_unscaled./std1;
+            d2 = d_unscaled./std2;
+            avg_n_dist = (d1 + d2)./2;
+            adj(k, l) = norm(avg_n_dist);
+        end
+    end
+
+    %bodyAndBands holds candidates for body sequences
+    bodyAndBands = containers.Map('KeyType', 'double', 'ValueType', 'any');
+    for series = [1 2]
+        my_series = series;
+        while my_series(end) +2 <= length(horizColors.keys)
+            if (diffBetweenColors(adj, [my_series my_series(end) + 2]) < diffBetweenColors(adj, [my_series my_series(end) + 1]))
+                my_series = [my_series my_series(end) + 2];
+            else
+                my_series = [my_series my_series(end) + 1];
+            end
+        end
+        bodyAndBands(series) = my_series; % two candidate series are stored in bodyAndBands: which one is the body bands and which is the resistor bands?
+    end
+
+    % r_series is the resistor bands, b_series is the body bands
+    if diffBetweenColors(adj, bodyAndBands(1)) < diffBetweenColors(adj, bodyAndBands(2)) && (length(setdiff(1:length(horizColors.keys), bodyAndBands(1))) >= 4)
+        r_series = setdiff(1:length(horizColors.keys), bodyAndBands(1)); 
+        b_series = bodyAndBands(1);
+    else
+        r_series = setdiff(1:length(horizColors.keys), bodyAndBands(2));
+        b_series = bodyAndBands(2);
+    end
+
+    avgBodyColor = zeros(1, 3);
+    for k = b_series
+        pre_m = meds(k, :);
+        avgBodyColor = avgBodyColor+ rgb2hsv(imadjust(pre_m, [], [], 1/2.2));
+    end
+    avgBodyColor = avgBodyColor./length(b_series); % average body color in hsv space
+
+    if avgBodyColor(1) > 0.33 && avgBodyColor(1) < 0.75 % figure out what svm to use based on body color of resistor
+        svm = SVM_blue;
+    elseif avgBodyColor(3) > 0.6
+        svm = SVM_beige;
+    else
+        svm = SVM_brown;
+    end
+    bandColors = strings(1, length(r_series)); % bandColors is the colors for the resistor bands
+    clrs_cnt = 1;
+    gmap = containers.Map('KeyType', 'double', 'ValueType', 'any');
+    % fill the band colors with the color names corresponding to the colors
+    for k=r_series
+        m = meds(k, :);
+        my_med = imadjust(m, [], [], 1/2.2); % adjust for gamma filtering
+        [mycolor_pre, loss] = predict(svm, rgb2lab(my_med)); % predict color
+        mycolor = mycolor_pre{1, 1}; % take best prediction
+        bandColors(clrs_cnt) = mycolor;
+        if strcmp(mycolor, 'gold')
+            B = sort(loss, 'descend');
+            Max2 = svm.ClassNames(find(loss == B(2)));
+
+            gmap(clrs_cnt) = Max2{1, 1};
+        end
+        clrs_cnt = clrs_cnt + 1;
+    end
+
+    % the next section determines which side the tolerance band is on
+    tol = findToleranceSide(bandColors, toleranceMap, dedupLines, r_series, horizColors); 
+
+    % flip bandColors (the colors) if tol == 1
+    if tol
+        bandColors = flip(bandColors);
+    end
+
+    % remove the occasional extra "band": a resistor with gold or gray
+    % tolerance generally only has four bands, and any resistor that I am
+    % designing my program to handle has no more than five bands.
+    if (bandColors(length(bandColors)) == "gold" || bandColors(length(bandColors)) == "gray")
+        cur_cnt = length(bandColors) - 3;
+    else
+        cur_cnt = max(1, length(bandColors)-4);
+    end
+
+    % display the resistance
+    num = "";
+    for el = bandColors(cur_cnt:end)
+        if strcmp(el, 'gold') && cur_cnt < length(bandColors) -1
+            if ~tol
+                idx = cur_cnt;
+            else
+                idx = length(bandColors)-cur_cnt+1;
+            end
+            bandColors(cur_cnt) = resMap(convertCharsToStrings(gmap(idx)));
+        elseif cur_cnt == length(bandColors)
+            bandColors(cur_cnt) = toleranceMap(convertCharsToStrings(el));
+        else
+            bandColors(cur_cnt) = resMap(convertCharsToStrings(el));
+        end
+
+        if cur_cnt == length(bandColors)-1
+            num = num + "e" + bandColors(cur_cnt);
+        elseif cur_cnt == length(bandColors)
+            tol = bandColors(cur_cnt);
+        else
+            num = num + bandColors(cur_cnt);
+        end
+        cur_cnt = cur_cnt + 1;
+    end
+    dbl = str2double(num);
+    if (dbl >= 1000000)
+        append = " MΩ ±";
+        dbl = dbl./1000000;
+    elseif (dbl >= 1000)
+        append = " kΩ ±";
+        dbl = dbl./1000;
+    else
+        append = " Ω ±";
+    end
+    num = "Resistance: " + dbl + append + tol;
+    rval = num;
+catch % if anything went wrong return the error code and ignore it
+    rval = "1";
+    return
+end
+end
